@@ -4,6 +4,14 @@ from flask import Flask, request
 import logging
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
+RENDER_URL = os.environ.get("RENDER_URL")
+
+if not BOT_TOKEN:
+    raise Exception("❌ BOT_TOKEN не установлен!")
+
+if not RENDER_URL:
+    raise Exception("❌ RENDER_URL не установлен!")
+
 TARGET_CHANNELS = [-1001317416582, -1002185590715]
 
 app = Flask(__name__)
@@ -16,15 +24,14 @@ API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
 def webhook():
     try:
         update = request.get_json()
+        logger.info(f"Получен update: {update}")
         
-        if "channel_post" in update:
+        if update and "channel_post" in update:
             post = update["channel_post"]
             channel_id = post["chat"]["id"]
+            message_id = post["message_id"]
             
             if channel_id in TARGET_CHANNELS:
-                message_id = post["message_id"]
-                
-                # ПРЯМОЙ ВЫЗОВ API (работает всегда)
                 url = f"{API_URL}/setMessageReaction"
                 data = {
                     "chat_id": channel_id,
@@ -37,10 +44,9 @@ def webhook():
                     logger.info(f"🔥 Реакция на пост {message_id} в канале {channel_id}")
                 else:
                     logger.error(f"Ошибка API: {response.text}")
-                    
         return "OK", 200
     except Exception as e:
-        logger.error(f"Ошибка: {e}")
+        logger.error(f"Ошибка webhook: {e}")
         return "OK", 200
 
 @app.route("/", methods=["GET"])
@@ -51,8 +57,13 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     
     # Устанавливаем вебхук
-    webhook_url = f"{os.environ.get('RENDER_URL')}/{BOT_TOKEN}"
-    requests.get(f"{API_URL}/setWebhook?url={webhook_url}")
+    webhook_url = f"{RENDER_URL}/{BOT_TOKEN}"
+    response = requests.get(f"{API_URL}/setWebhook?url={webhook_url}")
     
-    logger.info("🚀 Бот реакций запущен")
+    if response.status_code == 200:
+        logger.info(f"✅ Webhook установлен: {webhook_url}")
+    else:
+        logger.error(f"❌ Ошибка установки webhook: {response.text}")
+    
+    logger.info("🚀 Бот реакций запущен и слушает каналы...")
     app.run(host="0.0.0.0", port=port)
