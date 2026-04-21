@@ -1,37 +1,50 @@
 import os
-from telegram import Update
-from telegram.ext import Application, MessageHandler, filters
+import requests
+from flask import Flask, request
+import logging
 
-BOT_TOKEN = os.environ.get('BOT_TOKEN')
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+TARGET_CHANNELS = [-1001317416582, -1002185590715]
 
-CHANNEL_IDS = [-1002185590715, -1001317416582]
-REACTION_EMOJI = "🔥"
+app = Flask(__name__)
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-async def react_to_post(update: Update, context):
-    chat_id = update.effective_chat.id
-    message_id = update.effective_message.message_id
-    
-    if chat_id in CHANNEL_IDS:
-        try:
-            await context.bot.set_message_reaction(
-                chat_id=chat_id,
-                message_id=message_id,
-                reaction=REACTION_EMOJI
-            )
-            print(f"✅ Реакция {REACTION_EMOJI} на пост {message_id} в канале {chat_id}")
-        except Exception as e:
-            print(f"❌ Ошибка: {e}")
+API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
-def main():
-    if not BOT_TOKEN:
-        print("❌ Ошибка: BOT_TOKEN не установлен!")
-        return
-    
-    app = Application.builder().token(BOT_TOKEN).build()
-    app.add_handler(MessageHandler(filters.ALL, react_to_post))
-    
-    print("🚀 Бот запущен и слушает каналы...")
-    app.run_polling(allowed_updates=["channel_post"])
+@app.route(f"/{BOT_TOKEN}", methods=["POST"])
+def webhook():
+    try:
+        update = request.get_json()
+        
+        if "channel_post" in update:
+            post = update["channel_post"]
+            channel_id = post["chat"]["id"]
+            
+            if channel_id in TARGET_CHANNELS:
+                message_id = post["message_id"]
+                
+                url = f"{API_URL}/setMessageReaction"
+                data = {
+                    "chat_id": channel_id,
+                    "message_id": message_id,
+                    "reaction": [{"type": "emoji", "emoji": "🔥"}]
+                }
+                requests.post(url, json=data, timeout=5)
+                logger.info(f"🔥 Реакция на пост {message_id} в канале {channel_id}")
+        
+        return "OK", 200
+    except Exception as e:
+        logger.error(f"Ошибка: {e}")
+        return "OK", 200
+
+@app.route("/", methods=["GET"])
+def health():
+    return "OK", 200
 
 if __name__ == "__main__":
-    main()
+    port = int(os.environ.get("PORT", 10000))
+    webhook_url = f"{os.environ.get('RENDER_URL')}/{BOT_TOKEN}"
+    requests.get(f"{API_URL}/setWebhook?url={webhook_url}")
+    logger.info("Бот реакций запущен")
+    app.run(host="0.0.0.0", port=port)
