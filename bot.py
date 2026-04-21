@@ -6,12 +6,6 @@ import logging
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 RENDER_URL = os.environ.get("RENDER_URL")
 
-if not BOT_TOKEN:
-    raise Exception("❌ BOT_TOKEN не установлен!")
-
-if not RENDER_URL:
-    raise Exception("❌ RENDER_URL не установлен!")
-
 TARGET_CHANNELS = [-1001317416582, -1002185590715]
 
 app = Flask(__name__)
@@ -38,15 +32,11 @@ def webhook():
                     "message_id": message_id,
                     "reaction": [{"type": "emoji", "emoji": "🔥"}]
                 }
-                response = requests.post(url, json=data, timeout=5)
-                
-                if response.status_code == 200:
-                    logger.info(f"🔥 Реакция на пост {message_id} в канале {channel_id}")
-                else:
-                    logger.error(f"Ошибка API: {response.text}")
+                requests.post(url, json=data, timeout=5)
+                logger.info(f"🔥 Реакция на пост {message_id}")
         return "OK", 200
     except Exception as e:
-        logger.error(f"Ошибка webhook: {e}")
+        logger.error(f"Ошибка: {e}")
         return "OK", 200
 
 @app.route("/", methods=["GET"])
@@ -61,9 +51,9 @@ if __name__ == "__main__":
     response = requests.get(f"{API_URL}/setWebhook?url={webhook_url}")
     
     if response.status_code == 200:
-        logger.info(f"✅ Webhook установлен: {webhook_url}")
+        logger.info(f"✅ Вебхук установлен: {webhook_url}")
     else:
-        logger.error(f"❌ Ошибка установки webhook: {response.text}")
+        logger.error(f"❌ Ошибка: {response.text}")
     
-    logger.info("🚀 Бот реакций запущен и слушает каналы...")
+    logger.info("🚀 Бот запущен")
     app.run(host="0.0.0.0", port=port)
