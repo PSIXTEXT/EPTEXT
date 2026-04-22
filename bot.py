@@ -14,13 +14,14 @@ import logging
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 CHANNEL_ID = int(os.environ.get("CHANNEL_ID", 0))
 YOUTUBE_API_KEY = os.environ.get("YOUTUBE_API_KEY")
+RENDER_URL = os.environ.get("RENDER_URL", "https://eptext.onrender.com")
 
 # === КАНАЛЫ ДЛЯ РЕАКЦИЙ ===
 REACTION_CHANNELS = [-1002185590715, -1001317416582]
 
 # === ВАШИ КАНАЛЫ ДЛЯ ВИДЕО ===
 YOUTUBE_CHANNEL_HANDLE = "psixonat"
-RUTUBE_RSS_URL = "https://rutube.ru/rss/channel/41901830/"
+RUTUBE_RSS_URL = "https://rutube.ru/rss/channel/41901830/"  # ИСПРАВЛЕНО!
 
 # === ТЕКСТ К ВИДЕО ===
 FOOTER_TEXT = """
@@ -54,8 +55,8 @@ def save_last_videos(data):
 def webhook():
     try:
         update = request.get_json()
+        logger.info(f"Получен вебхук: {update}")
         
-        # Обработка постов в каналах (ставим реакции)
         if update and "channel_post" in update:
             post = update["channel_post"]
             channel_id = post["chat"]["id"]
@@ -118,10 +119,9 @@ def get_youtube_videos(channel_id):
             pub_time = datetime.fromisoformat(published_at.replace("Z", "+00:00"))
             now = datetime.now(pub_time.tzinfo)
             hours_ago = (now - pub_time).total_seconds() / 3600
-            
             videos.append({
                 "id": video_id,
-            "url": f"https://youtube.com/watch?v={video_id}",
+                "url": f"https://youtube.com/watch?v={video_id}",
                 "title": item["snippet"]["title"],
                 "thumbnail": item["snippet"]["thumbnails"]["high"]["url"],
                 "hours_ago": hours_ago
@@ -240,7 +240,7 @@ def check_all():
         for video in videos:
             if video["id"] == last_rutube_id:
                 break
-            send_rutube_video(video["url"], video["title"], video["thumbnail"])
+                send_rutube_video(video["url"], video["title"], video["thumbnail"])
             new_videos.append(f"Rutube: {video['title']}")
             time.sleep(2)
         last_videos["rutube"] = videos[0]["id"]
@@ -262,7 +262,7 @@ def check_all():
         logger.info(f"Отправлено {len(new_videos)} видео")
 
 # ============================================
-# ===== 5. ПЛАНИРОВЩИК (ежедневно в 15:00 МСК) =====
+# ===== 5. ПЛАНИРОВЩИК =====
 # ============================================
 def schedule_daily_check():
     scheduler = BackgroundScheduler(timezone=pytz.timezone("Europe/Moscow"))
@@ -285,15 +285,32 @@ def health():
 
 @app.route("/check", methods=["GET"])
 def manual_check():
-    """Ручной запуск проверки видео через браузер"""
     threading.Thread(target=check_all).start()
     return "✅ Проверка видео запущена!", 200
 
 # ============================================
-# ===== 7. ЗАПУСК =====
+# ===== 7. УСТАНОВКА ВЕБХУКА =====
+# ============================================
+def setup_webhook():
+    webhook_url = f"{RENDER_URL}/{BOT_TOKEN}"
+    url = f"{API_URL}/setWebhook?url={webhook_url}"
+    try:
+        response = requests.get(url, timeout=10)
+        if response.status_code == 200:
+            logger.info(f"✅ Вебхук установлен: {webhook_url}")
+        else:
+            logger.error(f"❌ Ошибка установки вебхука: {response.text}")
+    except Exception as e:
+        logger.error(f"❌ Не удалось установить вебхук: {e}")
+
+# ============================================
+# ===== 8. ЗАПУСК =====
 # ============================================
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
+    
+    # Устанавливаем вебхук при старте
+    setup_webhook()
     
     schedule_daily_check()
     
@@ -304,6 +321,5 @@ if __name__ == "__main__":
     logger.info(f"   YouTube: @{YOUTUBE_CHANNEL_HANDLE}")
     logger.info(f"   Rutube: {RUTUBE_RSS_URL}")
     logger.info("📅 Ежедневная проверка видео в 15:00 по Москве")
-    logger.info("🔗 Ручная проверка: /check")
     
     app.run(host="0.0.0.0", port=port)
