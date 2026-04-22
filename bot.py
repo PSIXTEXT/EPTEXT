@@ -236,7 +236,102 @@ def send_rutube_video(video_url, title, thumbnail):
             logger.info(f"✅ Rutube видео отправлено: {title}")
             return True
         else:
-            scheduler.start()
+            logger.error(f"❌ Ошибка Rutube: {response.text}")
+            return False
+    except Exception as e:
+        logger.error(f"❌ Ошибка отправки Rutube: {e}")
+        return False
+
+# ========== ГЛАВНАЯ ПРОВЕРКА ==========
+def check_all():
+    logger.info("🔍 ===== НАЧАЛО ПРОВЕРКИ ВИДЕО =====")
+    new_videos = []
+    tz = pytz.timezone("Europe/Moscow")
+    today = datetime.now(tz).date()
+    now_str = datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S")
+    logger.info(f"📅 Текущее время: {now_str}")
+    
+    last = load_last_videos()
+    last["last_check"] = now_str
+    save_last_videos(last)
+    
+    # ----- YouTube -----
+    if YOUTUBE_API_KEY:
+        logger.info("📺 Проверяем YouTube...")
+        channel_id = get_youtube_channel_id(YOUTUBE_CHANNEL_HANDLE)
+        if channel_id:
+            videos = get_youtube_videos(channel_id)
+            if videos:
+                video = videos[0]
+                logger.info(f"YouTube последнее видео: {video['title']}")
+                logger.info(f"Дата публикации: {video['published_at']}")
+                
+                # Конвертируем дату публикации
+                pub_date = datetime.fromisoformat(video['published_at'].replace('Z', '+00:00')).astimezone(tz).date()
+                logger.info(f"Дата публикации (МСК): {pub_date}")
+                logger.info(f"Сегодня: {today}")
+                logger.info(f"Последняя отправка YouTube: {last.get('youtube_date')}")
+                
+                if pub_date == today and last.get("youtube_date") != str(today):
+                    logger.info("🎬 Отправляем YouTube видео...")
+                    if send_youtube_video(video["thumbnail"], video["url"], video["title"]):
+                        new_videos.append(f"YouTube: {video['title']}")
+                        last["youtube_date"] = str(today)
+                        save_last_videos(last)
+                else:
+                    logger.info("⏭ YouTube видео не отправлено (уже отправлено или не сегодняшнее)")
+            else:
+                logger.warning("YouTube видео не найдены")
+        else:
+            logger.error("Не удалось найти YouTube канал")
+    else:
+        logger.warning("YOUTUBE_API_KEY не задан")
+    
+    # ----- Rutube -----
+    logger.info("📺 Проверяем Rutube...")
+    videos = get_rutube_videos_from_rss()
+    if videos:
+        video = videos[0]
+        logger.info(f"Rutube последнее видео: {video['title']}")
+        logger.info(f"Rutube ID: {video['id']}")
+        logger.info(f"Последний сохранённый Rutube ID: {last.get('rutube_id')}")
+        
+        if last.get("rutube_id") != video["id"]:
+            logger.info("🎬 Отправляем Rutube видео...")
+            if send_rutube_video(video["url"], video["title"], video["thumbnail"]):
+                new_videos.append(f"Rutube: {video['title']}")
+                last["rutube_id"] = video["id"]
+                save_last_videos(last)
+        else:
+            logger.info("⏭ Rutube видео не отправлено (уже отправлено)")
+    else:
+        logger.warning("Rutube видео не найдены или ошибка RSS")
+    
+    # ----- Итог -----
+    if not new_videos:
+        msg = f"📭 За сегодня ({today}) новых видео не найдено.\n\nПроверка выполнена в {now_str}"
+        try:
+            requests.post(f"{API_URL}/sendMessage", json={"chat_id": CHANNEL_ID, "text": msg, "parse_mode": "HTML"}, timeout=10)
+            logger.info("📭 Новых видео нет, сообщение отправлено")
+        except Exception as e:
+            logger.error(f"Ошибка отправки сообщения: {e}")
+    else:
+        logger.info(f"✅ ОТПРАВЛЕНО ВИДЕО: {len(new_videos)}")
+    
+    logger.info("🔍 ===== КОНЕЦ ПРОВЕРКИ =====")
+
+# ========== ПЛАНИРОВЩИК ==========
+def schedule_daily_check():
+    scheduler = BackgroundScheduler(timezone=pytz.timezone("Europe/Moscow"))
+    scheduler.add_job(
+        func=check_all,
+        trigger="cron",
+        hour=15,
+        minute=0,
+        id="daily_check",
+        misfire_grace_time=3600  # Даём час на выполнение, если пропустили
+    )
+    scheduler.start()
     logger.info("⏰ Планировщик запущен. Проверка каждый день в 15:00 по МСК")
 
 # ========== FLASK МАРШРУТЫ ==========
