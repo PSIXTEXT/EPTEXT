@@ -14,9 +14,9 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN")
 CHANNEL_ID = int(os.environ.get("CHANNEL_ID", 0))
 YOUTUBE_API_KEY = os.environ.get("YOUTUBE_API_KEY")
 
-# === ВАШИ КАНАЛЫ ===
-YOUTUBE_CHANNEL_HANDLE = "psixonat"
-RUTUBE_CHANNEL_URL = "https://rutube.ru/channel/41901830"
+# === ВАШИ КАНАЛЫ (ИСПРАВЛЕНО) ===
+YOUTUBE_CHANNEL_HANDLE = "psixonat"  # было apsexonat
+RUTUBE_CHANNEL_ID = 41901830  # было 41001830
 
 # === ТЕКСТ КОТОРЫЙ ДОБАВЛЯЕТСЯ К КАЖДОМУ ВИДЕО ===
 FOOTER_TEXT = """
@@ -31,7 +31,6 @@ logger = logging.getLogger(__name__)
 API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
 LAST_VIDEOS_FILE = "last_videos.json"
 
-# === РАБОТА С ФАЙЛОМ ПОСЛЕДНИХ ВИДЕО ===
 def load_last_videos():
     try:
         with open(LAST_VIDEOS_FILE, "r") as f:
@@ -57,6 +56,7 @@ def get_youtube_channel_id(handle):
         data = response.json()
         if data.get("items"):
             return data["items"][0]["id"]
+        logger.error(f"YouTube channel not found for handle: {handle}")
         return None
     except Exception as e:
         logger.error(f"Ошибка получения channel ID: {e}")
@@ -124,13 +124,12 @@ def get_rutube_videos():
     try:
         api_url = "https://rutube.ru/api/ugc/video/"
         params = {
-            "channel_id": 41901830,
+            "channel_id": RUTUBE_CHANNEL_ID,
             "limit": 5,
             "order_by": "issue_date"
         }
         response = requests.get(api_url, params=params, timeout=10)
         data = response.json()
-        
         videos = []
         for item in data.get("results", []):
             video_id = item["id"]
@@ -175,37 +174,50 @@ def check_all():
     
     # YouTube
     if YOUTUBE_API_KEY:
+        logger.info(f"Поиск YouTube канала: {YOUTUBE_CHANNEL_HANDLE}")
         channel_id = get_youtube_channel_id(YOUTUBE_CHANNEL_HANDLE)
         if channel_id:
+            logger.info(f"YouTube channel ID найден: {channel_id}")
             videos = get_youtube_videos(channel_id)
             last_videos = load_last_videos()
             last_youtube_id = last_videos.get("youtube")
             
-            if videos and videos[0]["id"] != last_youtube_id:
-                for video in videos:
-                    if video["id"] == last_youtube_id:
-                        break
-                    if video["hours_ago"] <= 24:
-                        send_youtube_video(video["thumbnail"], video["url"], video["title"])
-                        new_videos.append(f"YouTube: {video['title']}")
-                        time.sleep(2)
-                last_videos["youtube"] = videos[0]["id"]
-                save_last_videos(last_videos)
+            if videos:
+                logger.info(f"Найдено видео на YouTube: {len(videos)}")
+                if videos[0]["id"] != last_youtube_id:
+                    for video in videos:
+                        if video["id"] == last_youtube_id:
+                            break
+                        if video["hours_ago"] <= 24:
+                            send_youtube_video(video["thumbnail"], video["url"], video["title"])
+                            new_videos.append(f"YouTube: {video['title']}")
+                            time.sleep(2)
+                    last_videos["youtube"] = videos[0]["id"]
+                    save_last_videos(last_videos)
+            else:
+                logger.warning("Видео на YouTube не найдены")
+        else:
+            logger.error(f"Не удалось найти YouTube канал: {YOUTUBE_CHANNEL_HANDLE}")
     
     # Rutube
+    logger.info(f"Поиск Rutube канала: {RUTUBE_CHANNEL_ID}")
     videos = get_rutube_videos()
     last_videos = load_last_videos()
     last_rutube_id = last_videos.get("rutube")
     
-    if videos and videos[0]["id"] != last_rutube_id:
-        for video in videos:
-            if video["id"] == last_rutube_id:
-                break
-            send_rutube_video(video["url"], video["title"])
-            new_videos.append(f"Rutube: {video['title']}")
-            time.sleep(2)
-        last_videos["rutube"] = videos[0]["id"]
-        save_last_videos(last_videos)
+    if videos:
+        logger.info(f"Найдено видео на Rutube: {len(videos)}")
+        if videos[0]["id"] != last_rutube_id:
+            for video in videos:
+                if video["id"] == last_rutube_id:
+                    break
+                send_rutube_video(video["url"], video["title"])
+                new_videos.append(f"Rutube: {video['title']}")
+                time.sleep(2)
+            last_videos["rutube"] = videos[0]["id"]
+            save_last_videos(last_videos)
+    else:
+        logger.warning("Видео на Rutube не найдены")
     
     if not new_videos:
         url = f"{API_URL}/sendMessage"
@@ -254,8 +266,8 @@ if __name__ == "__main__":
     
     logger.info("🚀 Бот отслеживания видео запущен")
     logger.info(f"📺 YouTube канал: @{YOUTUBE_CHANNEL_HANDLE}")
-    logger.info(f"📺 Rutube канал: {RUTUBE_CHANNEL_URL}")
+    logger.info(f"📺 Rutube канал: {RUTUBE_CHANNEL_ID}")
     logger.info("📅 Ежедневная проверка в 15:00 по Москве")
-    logger.info("🔗 Ручная проверка: https://eptext.onrender.com/check")
+    logger.info("🔗 Ручная проверка: /check")
     
     app.run(host="0.0.0.0", port=port)
