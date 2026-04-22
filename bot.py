@@ -21,14 +21,12 @@ REACTION_CHANNELS = [-1002185590715, -1001317416582]
 
 # === ВАШИ КАНАЛЫ ДЛЯ ВИДЕО ===
 YOUTUBE_CHANNEL_HANDLE = "psixonat"
-RUTUBE_RSS_URL = "https://rutube.ru/rss/channel/41901830/"  # ИСПРАВЛЕНО!
+RUTUBE_RSS_URL = "https://rutube.ru/rss/channel/41901830/"
 
-# === ТЕКСТ К ВИДЕО ===
 FOOTER_TEXT = """
 Всем приятного просмотра.
 Не забываем подписываться, ставить лайки и обязательно комментировать!"""
 
-# === НАСТРОЙКА ===
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -36,26 +34,23 @@ logger = logging.getLogger(__name__)
 API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
 LAST_VIDEOS_FILE = "last_videos.json"
 
-# === РАБОТА С ФАЙЛОМ ПОСЛЕДНИХ ВИДЕО ===
 def load_last_videos():
     try:
         with open(LAST_VIDEOS_FILE, "r") as f:
             return json.load(f)
     except:
-        return {"youtube": None, "rutube": None}
+        return {"youtube_date": None, "rutube_id": None, "last_check": None}
 
 def save_last_videos(data):
     with open(LAST_VIDEOS_FILE, "w") as f:
         json.dump(data, f)
 
-# ============================================
-# ===== 1. РЕАКЦИИ НА ПОСТЫ В КАНАЛАХ =====
-# ============================================
+# ========== РЕАКЦИИ НА ПОСТЫ ==========
 @app.route(f"/{BOT_TOKEN}", methods=["POST"])
 def webhook():
     try:
         update = request.get_json()
-        logger.info(f"Получен вебхук: {update}")
+        logger.info(f"📩 Вебхук получен")
         
         if update and "channel_post" in update:
             post = update["channel_post"]
@@ -69,17 +64,18 @@ def webhook():
                     "message_id": message_id,
                     "reaction": [{"type": "emoji", "emoji": "🔥"}]
                 }
-                requests.post(url, json=data, timeout=5)
-                logger.info(f"🔥 Реакция на пост {message_id} в канале {channel_id}")
+                response = requests.post(url, json=data, timeout=5)
+                if response.status_code == 200:
+                    logger.info(f"🔥 Реакция на пост {message_id} в канале {channel_id}")
+                else:
+                    logger.error(f"❌ Ошибка реакции: {response.text}")
         
         return "OK", 200
     except Exception as e:
-        logger.error(f"Ошибка webhook: {e}")
+        logger.error(f"❌ Ошибка webhook: {e}")
         return "OK", 200
 
-# ============================================
-# ===== 2. ОТСЛЕЖИВАНИЕ YOUTUBE =====
-# ============================================
+# ========== YOUTUBE ==========
 def get_youtube_channel_id(handle):
     try:
         handle = handle.replace("@", "")
@@ -93,9 +89,10 @@ def get_youtube_channel_id(handle):
         data = response.json()
         if data.get("items"):
             return data["items"][0]["id"]
+        logger.error(f"YouTube канал не найден: {handle}")
         return None
     except Exception as e:
-        logger.error(f"Ошибка получения channel ID: {e}")
+        logger.error(f"Ошибка YouTube channel ID: {e}")
         return None
 
 def get_youtube_videos(channel_id):
@@ -116,15 +113,13 @@ def get_youtube_videos(channel_id):
         for item in data.get("items", []):
             video_id = item["id"]["videoId"]
             published_at = item["snippet"]["publishedAt"]
-            pub_time = datetime.fromisoformat(published_at.replace("Z", "+00:00"))
-            now = datetime.now(pub_time.tzinfo)
-            hours_ago = (now - pub_time).total_seconds() / 3600
+            
             videos.append({
                 "id": video_id,
                 "url": f"https://youtube.com/watch?v={video_id}",
                 "title": item["snippet"]["title"],
-                "thumbnail": item["snippet"]["thumbnails"]["high"]["url"],
-                "hours_ago": hours_ago
+                "published_at": published_at,
+            "thumbnail": item["snippet"]["thumbnails"]["high"]["url"]
             })
         return videos
     except Exception as e:
@@ -132,7 +127,6 @@ def get_youtube_videos(channel_id):
         return []
 
 def send_youtube_video(thumbnail, video_url, title):
-    url = f"{API_URL}/sendPhoto"
     caption = f"""🎬 <b>НОВОЕ ВИДЕО НА YOUTUBE</b>
 
 📹 {title}
@@ -147,43 +141,82 @@ def send_youtube_video(thumbnail, video_url, title):
         "parse_mode": "HTML"
     }
     try:
-        requests.post(url, json=data, timeout=10)
-        logger.info(f"YouTube видео отправлено: {title}")
-        return True
+        response = requests.post(f"{API_URL}/sendPhoto", json=data, timeout=15)
+        if response.status_code == 200:
+            logger.info(f"✅ YouTube видео отправлено: {title}")
+            return True
+        else:
+            logger.error(f"❌ Ошибка YouTube: {response.text}")
+            return False
     except Exception as e:
-        logger.error(f"Ошибка отправки YouTube: {e}")
+        logger.error(f"❌ Ошибка отправки YouTube: {e}")
         return False
 
-# ============================================
-# ===== 3. ОТСЛЕЖИВАНИЕ RUTUBE (через RSS) =====
-# ============================================
+# ========== RUTUBE (RSS) ==========
 def get_rutube_videos_from_rss():
     try:
-        response = requests.get(RUTUBE_RSS_URL, timeout=15)
+        logger.info(f"📡 Запрос RSS: {RUTUBE_RSS_URL}")
+        response = requests.get(RUTUBE_RSS_URL, timeout=15, headers={
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        })
         response.raise_for_status()
+        
+        # Проверяем, что это XML
+        if not response.text.strip().startswith('<?xml'):
+            logger.error(f"RSS вернул не XML: {response.text[:200]}")
+            return []
+        
         root = ET.fromstring(response.content)
-        
         videos = []
-        ns = {'atom': 'http://www.w3.org/2005/Atom'}
         
-        for entry in root.findall('.//atom:entry', ns):
-            video_id = entry.find('atom:id', ns).text.split('/')[-1]
-            title = entry.find('atom:title', ns).text
-            link = entry.find('atom:link', ns).attrib['href']
-            
-            videos.append({
-                "id": video_id,
-                "url": link,
-                "title": title,
-                "thumbnail": f"https://rutube.ru/api/video/{video_id}/thumbnail/?size=500"
-            })
+        # Пробуем разные пространства имён
+        namespaces = {
+            'atom': 'http://www.w3.org/2005/Atom',
+            '': 'http://www.w3.org/2005/Atom'
+        }
+        
+        for entry in root.findall('.//atom:entry', namespaces):
+            try:
+                # Получаем ID видео
+                id_elem = entry.find('atom:id', namespaces)
+                if id_elem is None or not id_elem.text:
+                    continue
+                video_id = id_elem.text.split('/')[-1]
+                
+                # Получаем название
+                title_elem = entry.find('atom:title', namespaces)
+                title = title_elem.text if title_elem is not None else "Без названия"
+                
+                # Получаем ссылку
+                link_elem = entry.find('atom:link', namespaces)
+                link = link_elem.attrib.get('href', '') if link_elem is not None else ''
+                
+                if video_id and link:
+                    videos.append({
+                        "id": video_id,
+                        "url": link,
+                        "title": title,
+                        "thumbnail": f"https://rutube.ru/api/video/{video_id}/thumbnail/?size=500"
+                    })
+                    logger.info(f"📹 Найдено видео на Rutube: {title}")
+            except Exception as e:
+                logger.error(f"Ошибка парсинга entry: {e}")
+                continue
+        
+        logger.info(f"📊 Rutube: найдено {len(videos)} видео")
         return videos[:5]
+        
+    except requests.exceptions.RequestException as e:
+        logger.error(f"❌ Rutube RSS запрос ошибка: {e}")
+        return []
+    except ET.ParseError as e:
+        logger.error(f"❌ Rutube XML ошибка: {e}")
+        return []
     except Exception as e:
-        logger.error(f"Rutube RSS ошибка: {e}")
+        logger.error(f"❌ Rutube общая ошибка: {e}")
         return []
 
 def send_rutube_video(video_url, title, thumbnail):
-    url = f"{API_URL}/sendPhoto"
     caption = f"""🎬 <b>НОВОЕ ВИДЕО НА RUTUBE</b>
 
 📹 {title}
@@ -198,99 +231,79 @@ def send_rutube_video(video_url, title, thumbnail):
         "parse_mode": "HTML"
     }
     try:
-        requests.post(url, json=data, timeout=10)
-        logger.info(f"Rutube видео отправлено: {title}")
-        return True
-    except Exception as e:
-        logger.error(f"Ошибка отправки Rutube: {e}")
-        return False
-
-# ============================================
-# ===== 4. ГЛАВНАЯ ПРОВЕРКА ВИДЕО =====
-# ============================================
-def check_all():
-    logger.info("🔍 Проверка новых видео...")
-    new_videos = []
-    
-    # YouTube
-    if YOUTUBE_API_KEY:
-        channel_id = get_youtube_channel_id(YOUTUBE_CHANNEL_HANDLE)
-        if channel_id:
-            videos = get_youtube_videos(channel_id)
-            last_videos = load_last_videos()
-            last_youtube_id = last_videos.get("youtube")
-            
-            if videos and videos[0]["id"] != last_youtube_id:
-                for video in videos:
-                    if video["id"] == last_youtube_id:
-                        break
-                    if video["hours_ago"] <= 24:
-                        send_youtube_video(video["thumbnail"], video["url"], video["title"])
-                        new_videos.append(f"YouTube: {video['title']}")
-                        time.sleep(2)
-                last_videos["youtube"] = videos[0]["id"]
-                save_last_videos(last_videos)
-    
-    # Rutube
-    videos = get_rutube_videos_from_rss()
-    last_videos = load_last_videos()
-    last_rutube_id = last_videos.get("rutube")
-    
-    if videos and videos[0]["id"] != last_rutube_id:
-        for video in videos:
-            if video["id"] == last_rutube_id:
-                break
-                send_rutube_video(video["url"], video["title"], video["thumbnail"])
-            new_videos.append(f"Rutube: {video['title']}")
-            time.sleep(2)
-        last_videos["rutube"] = videos[0]["id"]
-        save_last_videos(last_videos)
-    
-    if not new_videos:
-        url = f"{API_URL}/sendMessage"
-        data = {
-            "chat_id": CHANNEL_ID,
-            "text": f"📭 За сегодня новых видео не найдено.\n\nПроверка выполнена в {datetime.now().strftime('%H:%M:%S')}",
-            "parse_mode": "HTML"
-        }
-        try:
-            requests.post(url, json=data, timeout=10)
-            logger.info("Новых видео нет")
-        except Exception as e:
-            logger.error(f"Ошибка: {e}")
-    else:
-        logger.info(f"Отправлено {len(new_videos)} видео")
-
-# ============================================
-# ===== 5. ПЛАНИРОВЩИК =====
-# ============================================
-def schedule_daily_check():
-    scheduler = BackgroundScheduler(timezone=pytz.timezone("Europe/Moscow"))
-    scheduler.add_job(
-        func=check_all,
-        trigger="cron",
-        hour=15,
-        minute=0,
-        id="daily_youtube_rutube_check"
-    )
-    scheduler.start()
+        response = requests.post(f"{API_URL}/sendPhoto", json=data, timeout=15)
+        if response.status_code == 200:
+            logger.info(f"✅ Rutube видео отправлено: {title}")
+            return True
+        else:
+            scheduler.start()
     logger.info("⏰ Планировщик запущен. Проверка каждый день в 15:00 по МСК")
 
-# ============================================
-# ===== 6. FLASK МАРШРУТЫ =====
-# ============================================
+# ========== FLASK МАРШРУТЫ ==========
 @app.route("/", methods=["GET"])
 def health():
     return "OK", 200
 
 @app.route("/check", methods=["GET"])
 def manual_check():
+    """Ручной запуск проверки"""
     threading.Thread(target=check_all).start()
-    return "✅ Проверка видео запущена!", 200
+    return "✅ Проверка видео запущена! Смотрите логи.", 200
 
-# ============================================
-# ===== 7. УСТАНОВКА ВЕБХУКА =====
-# ============================================
+@app.route("/reset", methods=["GET"])
+def reset_memory():
+    """Сброс памяти бота"""
+    save_last_videos({"youtube_date": None, "rutube_id": None, "last_check": None})
+    return "✅ Память бота сброшена! При следующей проверке бот отправит последние видео.", 200
+
+@app.route("/debug", methods=["GET"])
+def debug():
+    """Отладочная информация"""
+    info = {
+        "memory": load_last_videos(),
+        "render_url": RENDER_URL,
+        "reaction_channels": REACTION_CHANNELS,
+        "youtube_handle": YOUTUBE_CHANNEL_HANDLE,
+        "rutube_rss": RUTUBE_RSS_URL,
+        "channel_id": CHANNEL_ID,
+        "time": datetime.now(pytz.timezone("Europe/Moscow")).strftime("%Y-%m-%d %H:%M:%S")
+    }
+    return json.dumps(info, indent=2), 200, {'Content-Type': 'application/json'}
+
+@app.route("/force_rutube", methods=["GET"])
+def force_rutube():
+    """Принудительная отправка последнего видео с Rutube"""
+    logger.info("🔥 Принудительная отправка Rutube")
+    videos = get_rutube_videos_from_rss()
+    if videos:
+        video = videos[0]
+        if send_rutube_video(video["url"], video["title"], video["thumbnail"]):
+            last = load_last_videos()
+            last["rutube_id"] = video["id"]
+            save_last_videos(last)
+            return f"✅ Принудительно отправлено: {video['title']}", 200
+        else:
+            return "❌ Ошибка при отправке", 500
+    else:
+        return "❌ Не удалось получить видео с Rutube", 500
+
+@app.route("/force_youtube", methods=["GET"])
+def force_youtube():
+    """Принудительная отправка последнего видео с YouTube"""
+    logger.info("🔥 Принудительная отправка YouTube")
+    channel_id = get_youtube_channel_id(YOUTUBE_CHANNEL_HANDLE)
+    if channel_id:
+        videos = get_youtube_videos(channel_id)
+        if videos:
+            video = videos[0]
+            if send_youtube_video(video["thumbnail"], video["url"], video["title"]):
+                last = load_last_videos()
+                last["youtube_date"] = datetime.now(pytz.timezone("Europe/Moscow")).date().strftime("%Y-%m-%d")
+                save_last_videos(last)
+                return f"✅ Принудительно отправлено: {video['title']}", 200
+    return "❌ Не удалось получить видео с YouTube", 500
+
+# ========== УСТАНОВКА ВЕБХУКА ==========
 def setup_webhook():
     webhook_url = f"{RENDER_URL}/{BOT_TOKEN}"
     url = f"{API_URL}/setWebhook?url={webhook_url}"
@@ -303,23 +316,23 @@ def setup_webhook():
     except Exception as e:
         logger.error(f"❌ Не удалось установить вебхук: {e}")
 
-# ============================================
-# ===== 8. ЗАПУСК =====
-# ============================================
+# ========== ЗАПУСК ==========
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     
-    # Устанавливаем вебхук при старте
     setup_webhook()
-    
     schedule_daily_check()
     
-    logger.info("🚀 БОТ ЗАПУЩЕН")
-    logger.info("🔥 Функция 1: Реакции на посты в каналах")
-    logger.info(f"   Каналы: {REACTION_CHANNELS}")
-    logger.info("📺 Функция 2: Отслеживание видео")
-    logger.info(f"   YouTube: @{YOUTUBE_CHANNEL_HANDLE}")
-    logger.info(f"   Rutube: {RUTUBE_RSS_URL}")
-    logger.info("📅 Ежедневная проверка видео в 15:00 по Москве")
+    logger.info("🚀 ===== БОТ ЗАПУЩЕН =====")
+    logger.info(f"🔥 Реакции на каналы: {REACTION_CHANNELS}")
+    logger.info(f"📺 YouTube канал: @{YOUTUBE_CHANNEL_HANDLE}")
+    logger.info(f"📺 Rutube RSS: {RUTUBE_RSS_URL}")
+    logger.info(f"📢 Telegram канал для постов: {CHANNEL_ID}")
+    logger.info("⏰ Ежедневная проверка в 15:00 МСК")
+    logger.info("🔗 Ручная проверка: /check")
+    logger.info("🔧 Отладка: /debug")
+    logger.info("🔄 Сброс памяти: /reset")
+    logger.info("📺 Принудительно YouTube: /force_youtube")
+    logger.info("📺 Принудительно Rutube: /force_rutube")
     
     app.run(host="0.0.0.0", port=port)
