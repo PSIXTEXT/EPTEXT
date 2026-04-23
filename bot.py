@@ -21,15 +21,15 @@ REACTION_CHANNELS = [-1002185590715, -1001317416582]
 
 # === ВАШИ КАНАЛЫ ДЛЯ ВИДЕО ===
 YOUTUBE_CHANNEL_HANDLE = "psixonat"
-RUTUBE_RSS_URL = "https://rutube.ru/rss/channel/41901830/"
+RUTUBE_RSS_URL = "https://rutube.ru/rss/channel/41901830/"  # ИСПРАВЛЕНО!
 
 FOOTER_TEXT = """
 Всем приятного просмотра.
 Не забываем подписываться, ставить лайки и обязательно комментировать!"""
 
-app = Flask(__name__)
+app = Flask(name)
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logger = logging.getLogger(name)
 
 API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
 LAST_VIDEOS_FILE = "last_videos.json"
@@ -117,9 +117,9 @@ def get_youtube_videos(channel_id):
             videos.append({
                 "id": video_id,
                 "url": f"https://youtube.com/watch?v={video_id}",
-                "title": item["snippet"]["title"],
+            "title": item["snippet"]["title"],
                 "published_at": published_at,
-            "thumbnail": item["snippet"]["thumbnails"]["high"]["url"]
+                "thumbnail": item["snippet"]["thumbnails"]["high"]["url"]
             })
         return videos
     except Exception as e:
@@ -228,7 +228,7 @@ def send_rutube_video(video_url, title, thumbnail):
         "chat_id": CHANNEL_ID,
         "photo": thumbnail,
         "caption": caption,
-        "parse_mode": "HTML"
+    "parse_mode": "HTML"
     }
     try:
         response = requests.post(f"{API_URL}/sendPhoto", json=data, timeout=15)
@@ -266,7 +266,6 @@ def check_all():
                 logger.info(f"YouTube последнее видео: {video['title']}")
                 logger.info(f"Дата публикации: {video['published_at']}")
                 
-                # Конвертируем дату публикации
                 pub_date = datetime.fromisoformat(video['published_at'].replace('Z', '+00:00')).astimezone(tz).date()
                 logger.info(f"Дата публикации (МСК): {pub_date}")
                 logger.info(f"Сегодня: {today}")
@@ -319,8 +318,7 @@ def check_all():
         logger.info(f"✅ ОТПРАВЛЕНО ВИДЕО: {len(new_videos)}")
     
     logger.info("🔍 ===== КОНЕЦ ПРОВЕРКИ =====")
-
-# ========== ПЛАНИРОВЩИК ==========
+    # ========== ПЛАНИРОВЩИК ==========
 def schedule_daily_check():
     scheduler = BackgroundScheduler(timezone=pytz.timezone("Europe/Moscow"))
     scheduler.add_job(
@@ -329,7 +327,7 @@ def schedule_daily_check():
         hour=15,
         minute=0,
         id="daily_check",
-        misfire_grace_time=3600  # Даём час на выполнение, если пропустили
+        misfire_grace_time=3600
     )
     scheduler.start()
     logger.info("⏰ Планировщик запущен. Проверка каждый день в 15:00 по МСК")
@@ -398,6 +396,11 @@ def force_youtube():
                 return f"✅ Принудительно отправлено: {video['title']}", 200
     return "❌ Не удалось получить видео с YouTube", 500
 
+@app.route("/ping", methods=["GET"])
+def ping():
+    """Для keep-alive от cron-job.org или UptimeRobot"""
+    return "pong", 200
+
 # ========== УСТАНОВКА ВЕБХУКА ==========
 def setup_webhook():
     webhook_url = f"{RENDER_URL}/{BOT_TOKEN}"
@@ -412,7 +415,7 @@ def setup_webhook():
         logger.error(f"❌ Не удалось установить вебхук: {e}")
 
 # ========== ЗАПУСК ==========
-if __name__ == "__main__":
+if name == "main":
     port = int(os.environ.get("PORT", 10000))
     
     setup_webhook()
@@ -429,5 +432,6 @@ if __name__ == "__main__":
     logger.info("🔄 Сброс памяти: /reset")
     logger.info("📺 Принудительно YouTube: /force_youtube")
     logger.info("📺 Принудительно Rutube: /force_rutube")
+    logger.info("🏓 Keep-alive: /ping")
     
     app.run(host="0.0.0.0", port=port)
