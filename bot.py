@@ -4,7 +4,6 @@ import json
 import pytz
 import time
 import threading
-import xml.etree.ElementTree as ET
 from datetime import datetime
 from flask import Flask, request
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -16,18 +15,20 @@ CHANNEL_ID = int(os.environ.get("CHANNEL_ID", 0))
 YOUTUBE_API_KEY = os.environ.get("YOUTUBE_API_KEY")
 RENDER_URL = os.environ.get("RENDER_URL", "https://eptext.onrender.com")
 
+# === ID АДМИНА (куда отправлять уведомления, если нет видео) ===
+ADMIN_ID = 483977434  # Ваш Telegram ID
+
 # === КАНАЛЫ ДЛЯ РЕАКЦИЙ ===
 REACTION_CHANNELS = [-1002185590715, -1001317416582]
 
-# === ВАШИ КАНАЛЫ ДЛЯ ВИДЕО ===
+# === ВАШ YouTube КАНАЛ ===
 YOUTUBE_CHANNEL_HANDLE = "psixonat"
-RUTUBE_RSS_URL = "https://rutube.ru/rss/channel/41901830/"
 
 FOOTER_TEXT = """
 Всем приятного просмотра.
 Не забываем подписываться, ставить лайки и обязательно комментировать!"""
 
-app = Flask(__name__)  # ИСПРАВЛЕНО: было name, стало __name__
+app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -39,7 +40,7 @@ def load_last_videos():
         with open(LAST_VIDEOS_FILE, "r") as f:
             return json.load(f)
     except:
-        return {"youtube_date": None, "rutube_id": None, "last_check": None}
+        return {"youtube_date": None, "last_check": None}
 
 def save_last_videos(data):
     with open(LAST_VIDEOS_FILE, "w") as f:
@@ -64,11 +65,8 @@ def webhook():
                     "message_id": message_id,
                     "reaction": [{"type": "emoji", "emoji": "🔥"}]
                 }
-                response = requests.post(url, json=data, timeout=5)
-                if response.status_code == 200:
-                    logger.info(f"🔥 Реакция на пост {message_id} в канале {channel_id}")
-                else:
-                    logger.error(f"❌ Ошибка реакции: {response.text}")
+                requests.post(url, json=data, timeout=5)
+                logger.info(f"🔥 Реакция на пост {message_id} в канале {channel_id}")
         
         return "OK", 200
     except Exception as e:
@@ -143,7 +141,7 @@ def send_youtube_video(thumbnail, video_url, title):
     try:
         response = requests.post(f"{API_URL}/sendPhoto", json=data, timeout=15)
         if response.status_code == 200:
-            logger.info(f"✅ YouTube видео отправлено: {title}")
+            logger.info(f"✅ YouTube видео отправлено в канал: {title}")
             return True
         else:
             logger.error(f"❌ Ошибка YouTube: {response.text}")
@@ -152,105 +150,39 @@ def send_youtube_video(thumbnail, video_url, title):
         logger.error(f"❌ Ошибка отправки YouTube: {e}")
         return False
 
-# ========== RUTUBE (RSS) ==========
-def get_rutube_videos_from_rss():
-    try:
-        logger.info(f"📡 Запрос RSS: {RUTUBE_RSS_URL}")
-        response = requests.get(RUTUBE_RSS_URL, timeout=15, headers={
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        })
-        response.raise_for_status()
-        
-        if not response.text.strip().startswith('<?xml'):
-            logger.error(f"RSS вернул не XML: {response.text[:200]}")
-            return []
-        
-        root = ET.fromstring(response.content)
-        videos = []
-        
-        namespaces = {
-            'atom': 'http://www.w3.org/2005/Atom',
-            '': 'http://www.w3.org/2005/Atom'
-        }
-        
-        for entry in root.findall('.//atom:entry', namespaces):
-            try:
-                id_elem = entry.find('atom:id', namespaces)
-                if id_elem is None or not id_elem.text:
-                    continue
-                video_id = id_elem.text.split('/')[-1]
-                
-                title_elem = entry.find('atom:title', namespaces)
-                title = title_elem.text if title_elem is not None else "Без названия"
-                
-                link_elem = entry.find('atom:link', namespaces)
-                link = link_elem.attrib.get('href', '') if link_elem is not None else ''
-                
-                if video_id and link:
-                    videos.append({
-                        "id": video_id,
-                        "url": link,
-                        "title": title,
-                        "thumbnail": f"https://rutube.ru/api/video/{video_id}/thumbnail/?size=500"
-                    })
-                    logger.info(f"📹 Найдено видео на Rutube: {title}")
-            except Exception as e:
-                logger.error(f"Ошибка парсинга entry: {e}")
-                continue
-        
-        logger.info(f"📊 Rutube: найдено {len(videos)} видео")
-        return videos[:5]
-        
-    except requests.exceptions.RequestException as e:
-        logger.error(f"❌ Rutube RSS запрос ошибка: {e}")
-        return []
-    except ET.ParseError as e:
-        logger.error(f"❌ Rutube XML ошибка: {e}")
-        return []
-    except Exception as e:
-        logger.error(f"❌ Rutube общая ошибка: {e}")
-        return []
-
-def send_rutube_video(video_url, title, thumbnail):
-    caption = f"""🎬 <b>НОВОЕ ВИДЕО НА RUTUBE</b>
-
-📹 {title}
-
-<a href='{video_url}'>▶️ Смотреть на Rutube</a>
-{FOOTER_TEXT}"""
-    
+def send_admin_message(text):
+    """Отправляет сообщение админу (только в личку)"""
     data = {
-        "chat_id": CHANNEL_ID,
-        "photo": thumbnail,
-        "caption": caption,
+        "chat_id": ADMIN_ID,
+        "text": text,
         "parse_mode": "HTML"
     }
     try:
-        response = requests.post(f"{API_URL}/sendPhoto", json=data, timeout=15)
+        response = requests.post(f"{API_URL}/sendMessage", json=data, timeout=10)
         if response.status_code == 200:
-            logger.info(f"✅ Rutube видео отправлено: {title}")
+            logger.info(f"✅ Сообщение отправлено админу")
             return True
         else:
-            logger.error(f"❌ Ошибка Rutube: {response.text}")
+            logger.error(f"❌ Ошибка отправки админу: {response.text}")
             return False
     except Exception as e:
-        logger.error(f"❌ Ошибка отправки Rutube: {e}")
+        logger.error(f"❌ Ошибка отправки админу: {e}")
         return False
 
 # ========== ГЛАВНАЯ ПРОВЕРКА ==========
 def check_all():
-    logger.info("🔍 ===== НАЧАЛО ПРОВЕРКИ ВИДЕО =====")
+    logger.info("🔍 ===== НАЧАЛО ПРОВЕРКИ =====")
     new_videos = []
     tz = pytz.timezone("Europe/Moscow")
     today = datetime.now(tz).date()
     now_str = datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S")
-    logger.info(f"📅 Текущее время: {now_str}")
+    time_str = datetime.now(tz).strftime("%H:%M:%S")
     
     last = load_last_videos()
     last["last_check"] = now_str
     save_last_videos(last)
     
-    # YouTube
+    # ----- YouTube -----
     if YOUTUBE_API_KEY:
         logger.info("📺 Проверяем YouTube...")
         channel_id = get_youtube_channel_id(YOUTUBE_CHANNEL_HANDLE)
@@ -258,63 +190,43 @@ def check_all():
             videos = get_youtube_videos(channel_id)
             if videos:
                 video = videos[0]
-                logger.info(f"YouTube последнее видео: {video['title']}")
-                logger.info(f"Дата публикации: {video['published_at']}")
-                
                 pub_date = datetime.fromisoformat(video['published_at'].replace('Z', '+00:00')).astimezone(tz).date()
-                logger.info(f"Дата публикации (МСК): {pub_date}")
-                logger.info(f"Сегодня: {today}")
-                logger.info(f"Последняя отправка YouTube: {last.get('youtube_date')}")
+                logger.info(f"YouTube последнее видео: {video['title']}")
+                logger.info(f"Дата публикации: {pub_date}, Сегодня: {today}")
                 
                 if pub_date == today and last.get("youtube_date") != str(today):
-                    logger.info("🎬 Отправляем YouTube видео...")
+                    logger.info("🎬 Отправляем YouTube видео в канал...")
                     if send_youtube_video(video["thumbnail"], video["url"], video["title"]):
                         new_videos.append(f"YouTube: {video['title']}")
                         last["youtube_date"] = str(today)
                         save_last_videos(last)
                 else:
-                    logger.info("⏭ YouTube видео не отправлено")
+                    if last.get("youtube_date") == str(today):
+                        logger.info("⏭ YouTube видео уже отправлено сегодня")
+                    else:
+                        logger.info(f"⏭ YouTube видео от {pub_date} — не сегодняшнее")
             else:
-                logger.warning("YouTube видео не найдены")
+                logger.warning("⚠️ Не удалось получить видео с YouTube")
         else:
-            logger.error("Не удалось найти YouTube канал")
+            logger.error("❌ Не удалось найти YouTube канал")
     else:
-        logger.warning("YOUTUBE_API_KEY не задан")
+        logger.warning("⚠️ YOUTUBE_API_KEY не задан")
     
-    # Rutube
-    logger.info("📺 Проверяем Rutube...")
-    videos = get_rutube_videos_from_rss()
-    if videos:
-        video = videos[0]
-        logger.info(f"Rutube последнее видео: {video['title']}")
-        logger.info(f"Rutube ID: {video['id']}")
-        logger.info(f"Последний сохранённый Rutube ID: {last.get('rutube_id')}")
-        
-        if last.get("rutube_id") != video["id"]:
-            logger.info("🎬 Отправляем Rutube видео...")
-            if send_rutube_video(video["url"], video["title"], video["thumbnail"]):
-                new_videos.append(f"Rutube: {video['title']}")
-                last["rutube_id"] = video["id"]
-                save_last_videos(last)
-        else:
-            logger.info("⏭ Rutube видео не отправлено (уже отправлено)")
-    else:
-        logger.warning("Rutube видео не найдены или ошибка RSS")
-    
-    # Итог
+    # ===== ОТПРАВКА УВЕДОМЛЕНИЯ АДМИНУ (если нет видео) =====
     if not new_videos:
-        msg = f"📭 За сегодня ({today}) новых видео не найдено.\n\nПроверка выполнена в {now_str}"
-        try:
-            requests.post(f"{API_URL}/sendMessage", json={"chat_id": CHANNEL_ID, "text": msg, "parse_mode": "HTML"}, timeout=10)
-            logger.info("📭 Новых видео нет, сообщение отправлено")
-        except Exception as e:
-            logger.error(f"Ошибка отправки сообщения: {e}")
+        msg = f"""📭 <b>Новых видео нет</b>
+
+За сегодня ({today}) видео не найдено.
+
+🕐 Время проверки: {now_str}"""
+        send_admin_message(msg)
+        logger.info("📭 Сообщение отправлено админу (новых видео нет)")
     else:
-        logger.info(f"✅ ОТПРАВЛЕНО ВИДЕО: {len(new_videos)}")
+        logger.info(f"✅ Отправлено {len(new_videos)} видео в канал")
     
     logger.info("🔍 ===== КОНЕЦ ПРОВЕРКИ =====")
 
-# ========== ПЛАНИРОВЩИК ==========
+# ========== ПЛАНИРОВЩИК (ежедневно в 15:00 МСК) ==========
 def schedule_daily_check():
     scheduler = BackgroundScheduler(timezone=pytz.timezone("Europe/Moscow"))
     scheduler.add_job(
@@ -335,46 +247,38 @@ def health():
 
 @app.route("/check", methods=["GET"])
 def manual_check():
+    """Ручной запуск проверки"""
     threading.Thread(target=check_all).start()
     return "✅ Проверка видео запущена! Смотрите логи.", 200
 
 @app.route("/reset", methods=["GET"])
 def reset_memory():
-    save_last_videos({"youtube_date": None, "rutube_id": None, "last_check": None})
+    """Сброс памяти бота"""
+    save_last_videos({"youtube_date": None, "last_check": None})
     return "✅ Память бота сброшена!", 200
 
 @app.route("/debug", methods=["GET"])
 def debug():
+    """Отладочная информация"""
     info = {
         "memory": load_last_videos(),
         "render_url": RENDER_URL,
         "reaction_channels": REACTION_CHANNELS,
         "youtube_handle": YOUTUBE_CHANNEL_HANDLE,
-        "rutube_rss": RUTUBE_RSS_URL,
         "channel_id": CHANNEL_ID,
+        "admin_id": ADMIN_ID,
         "time": datetime.now(pytz.timezone("Europe/Moscow")).strftime("%Y-%m-%d %H:%M:%S")
     }
-    return json.dumps(info, indent=2), 200, {'Content-Type': 'application/json'}
-
-@app.route("/force_rutube", methods=["GET"])
-def force_rutube():
-    logger.info("🔥 Принудительная отправка Rutube")
-    videos = get_rutube_videos_from_rss()
-    if videos:
-        video = videos[0]
-        if send_rutube_video(video["url"], video["title"], video["thumbnail"]):
-            last = load_last_videos()
-            last["rutube_id"] = video["id"]
-            save_last_videos(last)
-            return f"✅ Принудительно отправлено: {video['title']}", 200
-        else:
-            return "❌ Ошибка при отправке", 500
-    else:
-        return "❌ Не удалось получить видео с Rutube", 500
+    return json.dumps(info, indent=2, ensure_ascii=False), 200, {'Content-Type': 'application/json'}
 
 @app.route("/force_youtube", methods=["GET"])
 def force_youtube():
-    logger.info("🔥 Принудительная отправка YouTube")
+    """Принудительная отправка последнего видео с YouTube"""
+    logger.info("🔥 Принудительная отправка YouTube (админ)")
+    
+    # Сначала сбрасываем память
+    save_last_videos({"youtube_date": None, "last_check": None})
+    
     channel_id = get_youtube_channel_id(YOUTUBE_CHANNEL_HANDLE)
     if channel_id:
         videos = get_youtube_videos(channel_id)
@@ -384,11 +288,13 @@ def force_youtube():
                 last = load_last_videos()
                 last["youtube_date"] = datetime.now(pytz.timezone("Europe/Moscow")).date().strftime("%Y-%m-%d")
                 save_last_videos(last)
+                send_admin_message(f"✅ Принудительно отправлено YouTube видео: {video['title']}")
                 return f"✅ Принудительно отправлено: {video['title']}", 200
     return "❌ Не удалось получить видео с YouTube", 500
 
 @app.route("/ping", methods=["GET"])
 def ping():
+    """Для keep-alive от UptimeRobot"""
     return "pong", 200
 
 # ========== УСТАНОВКА ВЕБХУКА ==========
@@ -414,8 +320,12 @@ if __name__ == "__main__":
     logger.info("🚀 ===== БОТ ЗАПУЩЕН =====")
     logger.info(f"🔥 Реакции на каналы: {REACTION_CHANNELS}")
     logger.info(f"📺 YouTube канал: @{YOUTUBE_CHANNEL_HANDLE}")
-    logger.info(f"📺 Rutube RSS: {RUTUBE_RSS_URL}")
     logger.info(f"📢 Telegram канал для постов: {CHANNEL_ID}")
+    logger.info(f"👤 Админ для уведомлений: {ADMIN_ID}")
     logger.info("⏰ Ежедневная проверка в 15:00 МСК")
+    logger.info("🔗 Ручная проверка: /check")
+    logger.info("🔧 Отладка: /debug")
+    logger.info("🔄 Сброс памяти: /reset")
+    logger.info("🏓 Keep-alive: /ping")
     
     app.run(host="0.0.0.0", port=port)
