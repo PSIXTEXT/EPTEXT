@@ -14,6 +14,7 @@ CHANNEL_ID = int(os.environ.get("CHANNEL_ID", 0))
 YOUTUBE_API_KEY = os.environ.get("YOUTUBE_API_KEY")
 RENDER_URL = os.environ.get("RENDER_URL", "https://eptext.onrender.com")
 ADMIN_ID = 483977434
+
 REACTION_CHANNELS = [-1002185590715, -1001317416582]
 YOUTUBE_CHANNEL_HANDLE = "psixonat"
 
@@ -21,9 +22,9 @@ FOOTER_TEXT = """
 Всем приятного просмотра.
 Не забываем подписываться, ставить лайки и обязательно комментировать!"""
 
-app = Flask(__name__)
+app = Flask(name)
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logger = logging.getLogger(name)
 
 API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
 LAST_VIDEOS_FILE = "last_videos.json"
@@ -110,8 +111,7 @@ def send_youtube_video(thumbnail, video_url, title):
     except Exception as e:
         logger.error(f"Ошибка YouTube: {e}")
         return False
-
-def send_admin_message(text):
+        def send_admin_message(text):
     data = {"chat_id": ADMIN_ID, "text": text, "parse_mode": "HTML"}
     try:
         requests.post(f"{API_URL}/sendMessage", json=data, timeout=10)
@@ -128,46 +128,40 @@ def check_all():
     tz = pytz.timezone("Europe/Moscow")
     now_str = datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S")
     
+    if not YOUTUBE_API_KEY:
+        send_admin_message(f"⚠️ YOUTUBE_API_KEY не задан\n\nВремя: {now_str}")
+        return
+    
+    channel_id = get_youtube_channel_id(YOUTUBE_CHANNEL_HANDLE)
+    if not channel_id:
+        send_admin_message(f"❌ YouTube канал не найден\n\nВремя: {now_str}")
+        return
+    
+    videos = get_youtube_videos(channel_id)
+    if not videos:
+        send_admin_message(f"⚠️ Не удалось получить видео с YouTube\n\nВремя: {now_str}")
+        return
+    
+    video = videos[0]
     last = load_last_videos()
-    last["last_check"] = now_str
-    save_last_videos(last)
+    last_id = last.get("youtube_id")
     
-    if YOUTUBE_API_KEY:
-        logger.info("📺 Проверяем YouTube...")
-        channel_id = get_youtube_channel_id(YOUTUBE_CHANNEL_HANDLE)
-        if channel_id:
-            videos = get_youtube_videos(channel_id)
-            if videos:
-                video = videos[0]
-                last_id = last.get("youtube_id")
-                
-                logger.info(f"Последнее видео: {video['title']}")
-                logger.info(f"ID видео: {video['id']}")
-                logger.info(f"Последний отправленный ID: {last_id}")
-                
-                # Сравниваем по ID, а не по дате
-                if last_id != video["id"]:
-                    logger.info("🎬 Отправляем новое видео...")
-                    if send_youtube_video(video["thumbnail"], video["url"], video["title"]):
-                        new_videos.append(f"YouTube: {video['title']}")
-                        last["youtube_id"] = video["id"]
-                        last["youtube_date"] = datetime.now(tz).date().strftime("%Y-%m-%d")
-                        save_last_videos(last)
-                else:
-                    logger.info("⏭ Видео уже отправлено (ID совпадает)")
-            else:
-                logger.warning("⚠️ Видео не найдены")
-        else:
-            logger.error("❌ YouTube канал не найден")
+    logger.info(f"Последнее видео: {video['title']} (ID: {video['id']})")
+    logger.info(f"Последний отправленный ID: {last_id}")
+    
+    if last_id != video["id"]:
+        logger.info("🎬 Отправляем новое видео...")
+        if send_youtube_video(video["thumbnail"], video["url"], video["title"]):
+            last["youtube_id"] = video["id"]
+            last["last_check"] = now_str
+            save_last_videos(last)
+            logger.info("✅ Видео отправлено")
+            return  # Успех, ничего больше не отправляем админу
     else:
-        logger.warning("⚠️ YOUTUBE_API_KEY не задан")
+        logger.info("⏭ Видео уже отправлено (ID совпадает)")
     
-    if not new_videos:
-        send_admin_message(f"📭 Новых видео нет\n\nВремя: {now_str}")
-    else:
-        logger.info(f"✅ Отправлено {len(new_videos)} видео")
-    
-    logger.info("🔍 КОНЕЦ ПРОВЕРКИ")
+    # Если дошли сюда — новых видео нет
+    send_admin_message(f"📭 Новых видео нет\n\nПоследнее видео в памяти: {last_id}\nТекущее видео на YouTube: {video['id']}\nВремя: {now_str}")
 
 # ========== FLASK МАРШРУТЫ ==========
 @app.route("/", methods=["GET"])
@@ -176,13 +170,20 @@ def health():
 
 @app.route("/check", methods=["GET"])
 def manual_check():
+    """Ручной запуск проверки"""
     threading.Thread(target=check_all).start()
-    return "✅ Проверка запущена!", 200
+    return "✅ Проверка запущена! Смотрите логи.", 200
+
+@app.route("/daily_check", methods=["GET"])
+def daily_check():
+    """Для cron-job.org — запуск в 15:00"""
+    threading.Thread(target=check_all).start()
+    return "✅ Ежедневная проверка запущена!", 200
 
 @app.route("/reset", methods=["GET"])
 def reset_memory():
     save_last_videos({"youtube_id": None, "last_check": None})
-    return "✅ Память сброшена!", 200
+    return "✅ Память сброшена! При следующей проверке бот отправит последнее видео.", 200
 
 @app.route("/debug", methods=["GET"])
 def debug():
@@ -200,10 +201,11 @@ def force_youtube():
     """Принудительная отправка последнего видео"""
     save_last_videos({"youtube_id": None, "last_check": None})
     threading.Thread(target=check_all).start()
-    return "✅ Принудительная отправка запущена!", 200
+    return "✅ Принудительная отправка запущена! Видео скоро появится в канале.", 200
 
 @app.route("/ping", methods=["GET"])
 def ping():
+    """Для keep-alive от cron-job.org (каждые 5-10 минут)"""
     return "pong", 200
 
 # ========== УСТАНОВКА ВЕБХУКА ==========
@@ -216,12 +218,19 @@ def setup_webhook():
         logger.error(f"❌ Вебхук ошибка: {e}")
 
 # ========== ЗАПУСК ==========
-if __name__ == "__main__":
+if name == "main":
     port = int(os.environ.get("PORT", 10000))
     setup_webhook()
     logger.info("🚀 БОТ ЗАПУЩЕН")
     logger.info(f"🔥 Реакции на каналы")
     logger.info(f"📺 YouTube: @{YOUTUBE_CHANNEL_HANDLE}")
     logger.info(f"👤 Админ: {ADMIN_ID}")
+    logger.info("🔗 Доступные URL:")
+    logger.info("   /check - ручная проверка")
+    logger.info("   /daily_check - для cron-job (ежедневно в 15:00)")
+    logger.info("   /force_youtube - принудительная отправка")
+    logger.info("   /reset - сброс памяти")
+    logger.info("   /debug - отладка")
+    logger.info("   /ping - keep-alive")
     
     app.run(host="0.0.0.0", port=port)
