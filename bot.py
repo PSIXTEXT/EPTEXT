@@ -6,16 +6,22 @@ import time
 import threading
 from datetime import datetime
 from flask import Flask, request
+from apscheduler.schedulers.background import BackgroundScheduler
 import logging
 
-# === ПЕРЕМЕННЫЕ ===
+# === ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ ===
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 CHANNEL_ID = int(os.environ.get("CHANNEL_ID", 0))
 YOUTUBE_API_KEY = os.environ.get("YOUTUBE_API_KEY")
 RENDER_URL = os.environ.get("RENDER_URL", "https://eptext.onrender.com")
+
+# === ID АДМИНА ===
 ADMIN_ID = 483977434
 
+# === КАНАЛЫ ДЛЯ РЕАКЦИЙ ===
 REACTION_CHANNELS = [-1002185590715, -1001317416582]
+
+# === YouTube ===
 YOUTUBE_CHANNEL_HANDLE = "psixonat"
 
 FOOTER_TEXT = """
@@ -55,7 +61,7 @@ def webhook():
                 requests.post(url, json=data, timeout=5)
                 logger.info(f"🔥 Реакция")
         return "OK", 200
-    except Exception as e:
+    except:
         return "OK", 200
 
 # ========== YOUTUBE ==========
@@ -117,15 +123,12 @@ def send_admin_message(text):
     try:
         requests.post(f"{API_URL}/sendMessage", json=data, timeout=10)
         logger.info("✅ Сообщение админу отправлено")
-        return True
     except Exception as e:
         logger.error(f"Ошибка админу: {e}")
-        return False
 
 # ========== ГЛАВНАЯ ПРОВЕРКА ==========
 def check_all():
     logger.info("🔍 НАЧАЛО ПРОВЕРКИ")
-    new_videos = []
     tz = pytz.timezone("Europe/Moscow")
     now_str = datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S")
     
@@ -157,34 +160,55 @@ def check_all():
             last["last_check"] = now_str
             save_last_videos(last)
             logger.info("✅ Видео отправлено")
-            return  # Успех, ничего больше не отправляем админу
+            return
     else:
         logger.info("⏭ Видео уже отправлено (ID совпадает)")
     
-    # Если дошли сюда — новых видео нет
-    send_admin_message(f"📭 Новых видео нет\n\nПоследнее видео в памяти: {last_id}\nТекущее видео на YouTube: {video['id']}\nВремя: {now_str}")
+    send_admin_message(f"📭 Новых видео нет\n\nВремя: {now_str}")
+
+# ========== ПЛАНИРОВЩИК (ежедневно в 15:00 МСК) ==========
+def schedule_daily_check():
+    scheduler = BackgroundScheduler(timezone=pytz.timezone("Europe/Moscow"))
+    scheduler.add_job(func=check_all, trigger="cron", hour=15, minute=0, id="daily_check")
+    scheduler.start()
+    logger.info("⏰ Планировщик запущен. Проверка каждый день в 15:00 по МСК")
+
+# ========== KEEP-ALIVE (сам себя будит каждые 10 минут) ==========
+def keep_alive():
+    """Каждые 10 минут пингует самого себя, чтобы Render не усыпил"""
+    while True:
+        time.sleep(600)  # 10 минут
+        try:
+            url = f"{RENDER_URL}/ping"
+            requests.get(url, timeout=10)
+            logger.info("🏓 Self-ping")
+        except Exception as e:
+            logger.error(f"Self-ping ошибка: {e}")
 
 # ========== FLASK МАРШРУТЫ ==========
 @app.route("/", methods=["GET"])
 def health():
     return "OK", 200
 
+@app.route("/ping", methods=["GET"])
+def ping():
+    return "pong", 200
+
 @app.route("/check", methods=["GET"])
 def manual_check():
-    """Ручной запуск проверки"""
     threading.Thread(target=check_all).start()
-    return "✅ Проверка запущена! Смотрите логи.", 200
-
-@app.route("/daily_check", methods=["GET"])
-def daily_check():
-    """Для cron-job.org — запуск в 15:00"""
-    threading.Thread(target=check_all).start()
-    return "✅ Ежедневная проверка запущена!", 200
+    return "✅ Проверка запущена!", 200
 
 @app.route("/reset", methods=["GET"])
 def reset_memory():
     save_last_videos({"youtube_id": None, "last_check": None})
-    return "✅ Память сброшена! При следующей проверке бот отправит последнее видео.", 200
+    return "✅ Память сброшена!", 200
+
+@app.route("/force_youtube", methods=["GET"])
+def force_youtube():
+    save_last_videos({"youtube_id": None, "last_check": None})
+    threading.Thread(target=check_all).start()
+    return "✅ Принудительная отправка запущена!", 200
 
 @app.route("/debug", methods=["GET"])
 def debug():
@@ -196,18 +220,6 @@ def debug():
         "time": datetime.now(pytz.timezone("Europe/Moscow")).strftime("%Y-%m-%d %H:%M:%S")
     }
     return json.dumps(info, indent=2, ensure_ascii=False)
-
-@app.route("/force_youtube", methods=["GET"])
-def force_youtube():
-    """Принудительная отправка последнего видео"""
-    save_last_videos({"youtube_id": None, "last_check": None})
-    threading.Thread(target=check_all).start()
-    return "✅ Принудительная отправка запущена! Видео скоро появится в канале.", 200
-
-@app.route("/ping", methods=["GET"])
-def ping():
-    """Для keep-alive от cron-job.org (каждые 5-10 минут)"""
-    return "pong", 200
 
 # ========== УСТАНОВКА ВЕБХУКА ==========
 def setup_webhook():
@@ -221,17 +233,21 @@ def setup_webhook():
 # ========== ЗАПУСК ==========
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
+    
     setup_webhook()
-    logger.info("🚀 БОТ ЗАПУЩЕН")
-    logger.info(f"🔥 Реакции на каналы")
+    schedule_daily_check()
+    
+    # Запускаем keep-alive в фоновом потоке
+    threading.Thread(target=keep_alive, daemon=True).start()
+    
+    logger.info("🚀 ===== БОТ ЗАПУЩЕН =====")
+    logger.info(f"🔥 Реакции на каналы: {REACTION_CHANNELS}")
     logger.info(f"📺 YouTube: @{YOUTUBE_CHANNEL_HANDLE}")
     logger.info(f"👤 Админ: {ADMIN_ID}")
-    logger.info("🔗 Доступные URL:")
-    logger.info("   /check - ручная проверка")
-    logger.info("   /daily_check - для cron-job (ежедневно в 15:00)")
-    logger.info("   /force_youtube - принудительная отправка")
-    logger.info("   /reset - сброс памяти")
-    logger.info("   /debug - отладка")
-    logger.info("   /ping - keep-alive")
+    logger.info("⏰ Ежедневная проверка в 15:00 МСК")
+    logger.info("🔗 /check - ручная проверка")
+    logger.info("🔗 /force_youtube - принудительная отправка")
+    logger.info("🔗 /reset - сброс памяти")
+    logger.info("🔗 /debug - отладка")
     
     app.run(host="0.0.0.0", port=port)
