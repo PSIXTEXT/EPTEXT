@@ -22,9 +22,9 @@ FOOTER_TEXT = """
 Всем приятного просмотра.
 Не забываем подписываться, ставить лайки и обязательно комментировать!"""
 
-app = Flask(name)
+app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(name)
+logger = logging.getLogger(__name__)
 
 API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
 LAST_VIDEOS_FILE = "last_videos.json"
@@ -111,7 +111,8 @@ def send_youtube_video(thumbnail, video_url, title):
     except Exception as e:
         logger.error(f"Ошибка YouTube: {e}")
         return False
-        def send_admin_message(text):
+
+def send_admin_message(text):
     data = {"chat_id": ADMIN_ID, "text": text, "parse_mode": "HTML"}
     try:
         requests.post(f"{API_URL}/sendMessage", json=data, timeout=10)
@@ -218,7 +219,7 @@ def setup_webhook():
         logger.error(f"❌ Вебхук ошибка: {e}")
 
 # ========== ЗАПУСК ==========
-if name == "main":
+if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     setup_webhook()
     logger.info("🚀 БОТ ЗАПУЩЕН")
